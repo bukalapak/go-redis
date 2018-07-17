@@ -11,6 +11,7 @@ import (
 	"github.com/bukalapak/go-redis/internal"
 	"github.com/bukalapak/go-redis/internal/pool"
 	"github.com/bukalapak/go-redis/internal/proto"
+	opentracing "github.com/opentracing/opentracing-go"
 )
 
 // Nil reply Redis returns when key does not exist.
@@ -25,6 +26,7 @@ func SetLogger(logger *log.Logger) {
 }
 
 type baseClient struct {
+	ctx      context.Context
 	opt      *Options
 	connPool pool.Pooler
 
@@ -36,6 +38,7 @@ type baseClient struct {
 }
 
 func (c *baseClient) init() {
+
 	if c.opt.CircuitBreaker == nil {
 		c.process = c.defaultProcess
 	} else {
@@ -135,7 +138,24 @@ func (c *baseClient) WrapProcess(fn func(oldProcess func(cmd Cmder) error) func(
 }
 
 func (c *baseClient) Process(cmd Cmder) error {
-	return c.process(cmd)
+	start := time.Now()
+	span, ctx := opentracing.StartSpanFromContext(context.Background(), "go_redis_client")
+	defer span.Finish()
+	span = span.SetTag("db.type", "redis")
+	span = span.SetTag("db.statment", cmd.String())
+	span = span.SetTag("span.kind", "client")
+
+	err := c.process(cmd)
+	if err != nil {
+		span.LogEvent("error")
+		span.LogKV(
+			"event", "error",
+			"type", err.Error(),
+			"latency", time.Since(start),
+		)
+	}
+	c.ctx = ctx
+	return err
 }
 
 func (c *baseClient) defaultProcess(cmd Cmder) error {
